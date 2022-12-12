@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .cspresnet import CSPResNet
 from .dla import *
 from .hrnet import *
 from .resnet import *
+from .resnet_th import BevResNet
 from .sac import *
 from .second_backbone import *
 from .vovnetcp import VoVNetCP
