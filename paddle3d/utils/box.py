@@ -11,7 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import os
+import math
 import numpy as np
 import paddle
 
@@ -104,6 +105,15 @@ def normalize_bbox(bboxes, pc_range):
     return normalized_bboxes
 
 
+def atan2(a, b):
+    atan = paddle.atan(a / b)
+    cond = b < 0
+    pi_factor = paddle.where(cond,
+                             paddle.sign(a) * math.pi,
+                             paddle.to_tensor(0).astype(a.dtype))
+    return atan + pi_factor
+
+
 def denormalize_bbox(normalized_bboxes, pc_range):
     """
     This function is modified from https://github.com/fundamentalvision/BEVFormer/blob/master/projects/mmdet3d_plugin/core/bbox/util.py
@@ -112,7 +122,11 @@ def denormalize_bbox(normalized_bboxes, pc_range):
     rot_sine = normalized_bboxes[..., 6:7]
 
     rot_cosine = normalized_bboxes[..., 7:8]
-    rot = paddle.atan2(rot_sine, rot_cosine)
+    if os.environ.get('FLAGS_deploy'):
+        print('Use deploy atan2')
+        rot = atan2(rot_sine, rot_cosine)
+    else:
+        rot = paddle.atan2(rot_sine, rot_cosine)
 
     # center in the bev
     cx = normalized_bboxes[..., 0:1]
@@ -156,10 +170,10 @@ def bbox_overlaps(bboxes1, bboxes2, mode='iou', eps=1e-6):
     if rows * cols == 0:
         return paddle.to_tensor(batch_shape + (rows, cols))
 
-    area1 = (bboxes1[..., 2] - bboxes1[..., 0]) * (
-        bboxes1[..., 3] - bboxes1[..., 1])
-    area2 = (bboxes2[..., 2] - bboxes2[..., 0]) * (
-        bboxes2[..., 3] - bboxes2[..., 1])
+    area1 = (bboxes1[..., 2] - bboxes1[..., 0]) * (bboxes1[..., 3] -
+                                                   bboxes1[..., 1])
+    area2 = (bboxes2[..., 2] - bboxes2[..., 0]) * (bboxes2[..., 3] -
+                                                   bboxes2[..., 1])
 
     lt = paddle.maximum(bboxes1[..., :, None, :2],
                         bboxes2[..., None, :, :2])  # [B, rows, cols, 2]
