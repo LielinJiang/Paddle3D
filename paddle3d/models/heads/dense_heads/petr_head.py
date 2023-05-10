@@ -1039,25 +1039,27 @@ class PETRHead(nn.Layer):
 
         outputs_classes = []
         outputs_coords = []
-        for lvl in range(outs_dec.shape[0]):
-            reference = inverse_sigmoid(reference_points.clone())
-            assert reference.shape[-1] == 3
-            outputs_class = self.cls_branches[lvl](outs_dec[lvl])
-            tmp = self.reg_branches[lvl](outs_dec[lvl])
+        # for lvl in range(outs_dec.shape[0]):
+        print('export only use last linear')
+        lvl = -1
+        reference = inverse_sigmoid(reference_points.clone())
+        assert reference.shape[-1] == 3
+        outputs_class = self.cls_branches[lvl](outs_dec[lvl])
+        tmp = self.reg_branches[lvl](outs_dec[lvl])
 
-            tmp[..., 0:2] += reference[..., 0:2]
+        tmp[..., 0:2] += reference[..., 0:2]
 
-            tmp[..., 0:2] = F.sigmoid(tmp[..., 0:2])
-            tmp[..., 4:5] += reference[..., 2:3]
+        tmp[..., 0:2] = F.sigmoid(tmp[..., 0:2])
+        tmp[..., 4:5] += reference[..., 2:3]
 
-            tmp[..., 4:5] = F.sigmoid(tmp[..., 4:5])
+        tmp[..., 4:5] = F.sigmoid(tmp[..., 4:5])
 
-            if self.with_time:
-                tmp[..., 8:] = tmp[..., 8:] / mean_time_stamp[:, None, None]
+        if self.with_time:
+            tmp[..., 8:] = tmp[..., 8:] / mean_time_stamp[:, None, None]
 
-            outputs_coord = tmp
-            outputs_classes.append(outputs_class)
-            outputs_coords.append(outputs_coord)
+        outputs_coord = tmp
+        outputs_classes.append(outputs_class)
+        outputs_coords.append(outputs_coord)
 
         all_cls_scores = paddle.stack(outputs_classes)
         all_bbox_preds = paddle.stack(outputs_coords)
