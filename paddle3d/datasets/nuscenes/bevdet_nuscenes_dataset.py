@@ -479,11 +479,13 @@ class BEVDetNuScenesDataset(Custom3DDataset):
         """
         sample = batch[0]
         if isinstance(sample, np.ndarray):
-            try:
-                batch = np.stack(batch, axis=0)
-                return batch
-            except Exception as e:
-                return batch
+            batch = np.stack(batch, axis=0)
+            return batch
+            # try:
+            #     batch = np.stack(batch, axis=0)
+            #     return batch
+            # except Exception as e:
+            #     return batch
         elif isinstance(sample, SampleMeta):
             return batch
         elif isinstance(sample, Sample):

@@ -340,6 +340,40 @@ class PETRHead(nn.Layer):
         if self.with_fpe:
             self.fpe = SELayer(self.embed_dims)
 
+        if True:
+            B, N = 1, 6
+            pad_h, pad_w = 320, 800
+            H, W = 20, 50
+            eps = 1e-5
+
+            coords_h = paddle.arange(H, dtype='float32') * pad_h / H
+            coords_w = paddle.arange(W, dtype='float32') * pad_w / W
+            if self.LID:
+                index = paddle.arange(
+                    start=0, end=self.depth_num, step=1, dtype='float32')
+                index_1 = index + 1
+                bin_size = (self.position_range[3] - self.depth_start) / (
+                    self.depth_num * (1 + self.depth_num))
+                coords_d = self.depth_start + bin_size * index * index_1
+            else:
+                index = paddle.arange(
+                    start=0, end=self.depth_num, step=1, dtype='float32')
+                bin_size = (
+                    self.position_range[3] - self.depth_start) / self.depth_num
+                coords_d = self.depth_start + bin_size * index
+
+            D = coords_d.shape[0]
+            # W, H, D, 3
+            coords = paddle.stack(paddle.meshgrid(
+                [coords_w, coords_h, coords_d])).transpose([1, 2, 3, 0])
+            coords = paddle.concat((coords, paddle.ones_like(coords[..., :1])), -1)
+            coords[..., :2] = coords[..., :2] * paddle.maximum(
+                coords[..., 2:3],
+                paddle.ones_like(coords[..., 2:3]) * eps)
+            self._coords = coords.reshape([1, 1, W, H, D, 4]).tile(
+                [B, N, 1, 1, 1, 1]).reshape([B, N, W, H, D, 4, 1])
+            self._D = D
+
     def init_weights(self):
         """Initialize weights of the transformer head."""
         # The initialization for transformer is important
@@ -361,12 +395,13 @@ class PETRHead(nn.Layer):
             for m in self.cls_branches:
                 param_init.constant_init(m[-1].bias, value=bias_val)
 
+
     def position_embeding(self,
                           img_feats,
                           img_metas,
                           masks=None,
                           lidar2img=None):
-        eps = 1e-5
+        
         if getattr(self, 'in_export_mode', False):
             pad_h, pad_w = img_metas['image_shape']
         elif self.to_static:
@@ -376,31 +411,33 @@ class PETRHead(nn.Layer):
             pad_h, pad_w, _ = img_metas[0]['pad_shape'][0]
 
         B, N, C, H, W = img_feats[self.position_level].shape
-        coords_h = paddle.arange(H, dtype='float32') * pad_h / H
-        coords_w = paddle.arange(W, dtype='float32') * pad_w / W
+        # coords_h = paddle.arange(H, dtype='float32') * pad_h / H
+        # coords_w = paddle.arange(W, dtype='float32') * pad_w / W
+        # print(H, W, pad_h, pad_w)
+        # print(coords_h)
+        # print(paddle.arange(pad_h, step=pad_h / H, dtype='float32'))
+        # if self.LID:
+        #     index = paddle.arange(
+        #         start=0, end=self.depth_num, step=1, dtype='float32')
+        #     index_1 = index + 1
+        #     bin_size = (self.position_range[3] - self.depth_start) / (
+        #         self.depth_num * (1 + self.depth_num))
+        #     coords_d = self.depth_start + bin_size * index * index_1
+        # else:
+        #     index = paddle.arange(
+        #         start=0, end=self.depth_num, step=1, dtype='float32')
+        #     bin_size = (
+        #         self.position_range[3] - self.depth_start) / self.depth_num
+        #     coords_d = self.depth_start + bin_size * index
 
-        if self.LID:
-            index = paddle.arange(
-                start=0, end=self.depth_num, step=1, dtype='float32')
-            index_1 = index + 1
-            bin_size = (self.position_range[3] - self.depth_start) / (
-                self.depth_num * (1 + self.depth_num))
-            coords_d = self.depth_start + bin_size * index * index_1
-        else:
-            index = paddle.arange(
-                start=0, end=self.depth_num, step=1, dtype='float32')
-            bin_size = (
-                self.position_range[3] - self.depth_start) / self.depth_num
-            coords_d = self.depth_start + bin_size * index
-
-        D = coords_d.shape[0]
-        # W, H, D, 3
-        coords = paddle.stack(paddle.meshgrid(
-            [coords_w, coords_h, coords_d])).transpose([1, 2, 3, 0])
-        coords = paddle.concat((coords, paddle.ones_like(coords[..., :1])), -1)
-        coords[..., :2] = coords[..., :2] * paddle.maximum(
-            coords[..., 2:3],
-            paddle.ones_like(coords[..., 2:3]) * eps)
+        # D = coords_d.shape[0]
+        # # W, H, D, 3
+        # coords = paddle.stack(paddle.meshgrid(
+        #     [coords_w, coords_h, coords_d])).transpose([1, 2, 3, 0])
+        # coords = paddle.concat((coords, paddle.ones_like(coords[..., :1])), -1)
+        # coords[..., :2] = coords[..., :2] * paddle.maximum(
+        #     coords[..., 2:3],
+        #     paddle.ones_like(coords[..., 2:3]) * eps)
 
         if getattr(self, 'in_export_mode', False):
             img2lidars = img_metas['img2lidars']
@@ -412,19 +449,28 @@ class PETRHead(nn.Layer):
             for img_meta in img_metas:
                 img2lidar = []
                 for i in range(len(img_meta['lidar2img'])):
-                    img2lidar.append(np.linalg.inv(img_meta['lidar2img'][i]))
-                img2lidars.append(np.asarray(img2lidar))
+                    # print(type(img_meta['lidar2img'][i]))
+                    # img2lidar.append(np.linalg.inv(img_meta['lidar2img'][i]))
+                    img2lidar.append(img_meta['lidar2img'][i])
+                img2lidars.append(paddle.stack(img2lidar, 0))
+                # print(img2lidars[-1].shape)
+                # img2lidars.append(np.asarray(img2lidar))
 
-            img2lidars = np.asarray(img2lidars)
+            img2lidars = paddle.linalg.inv(paddle.stack(img2lidars, 0)).astype(img_feats[self.position_level].dtype)
+            # print(img2lidars.shape)
+            # img2lidars = np.asarray(img2lidars)
 
             # (B, N, 4, 4)
-            img2lidars = paddle.to_tensor(img2lidars).astype(coords.dtype)
+            # img2lidars = paddle.to_tensor(img2lidars).astype(coords.dtype)
 
-        coords = coords.reshape([1, 1, W, H, D, 4]).tile(
-            [B, N, 1, 1, 1, 1]).reshape([B, N, W, H, D, 4, 1])
+        D = self._D
+        coords = self._coords
 
-        img2lidars = img2lidars.reshape([B, N, 1, 1, 1, 16]).tile(
-            [1, 1, W, H, D, 1]).reshape([B, N, W, H, D, 4, 4])
+        # coords = coords.reshape([1, 1, W, H, D, 4]).tile(
+        #     [B, N, 1, 1, 1, 1]).reshape([B, N, W, H, D, 4, 1])
+
+        img2lidars = img2lidars.reshape_([B, N, 1, 1, 1, 16]).tile(
+            [1, 1, W, H, D, 1]).reshape_([B, N, W, H, D, 4, 4])
 
         coords3d = paddle.matmul(img2lidars, coords)
         coords3d = coords3d.reshape(coords3d.shape[:-1])[..., :3]

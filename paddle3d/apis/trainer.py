@@ -55,6 +55,7 @@ def default_dataloader_build_fn(**kwargs) -> paddle.io.DataLoader:
             shuffle=shuffle,
             drop_last=drop_last)
 
+        # collate_fn = None
         if hasattr(model, 'collate_fn'):
             collate_fn = model.collate_fn
         else:
@@ -127,7 +128,7 @@ class Trainer:
             amp_cfg: Optional[dict] = None,
             do_bind: Optional[bool] = False,
             temporal_start_epoch: Optional[int] = -1,
-            ema_cfg: Optional[dict] = {}):
+            ema_cfg: Optional[dict] = None):
 
         self.model = model
         self.optimizer = optimizer
@@ -346,9 +347,9 @@ class Trainer:
                 # simple implementation of SequentialControlHook
                 if self.temporal_start_epoch != -1 and (
                         self.cur_epoch > self.temporal_start_epoch):
-                    model.with_prev = True
+                    self.model.with_prev = True
                 else:
-                    model.with_prev = False
+                    self.model.with_prev = False
 
                 if self.cur_iter > self.iters:
                     break
@@ -357,6 +358,7 @@ class Trainer:
 
                 lr = self.optimizer.get_lr()
 
+                # losses_sum = dict(fake_loss=0.)
                 output = training_step(
                     model,
                     self.optimizer,
@@ -370,7 +372,6 @@ class Trainer:
 
                 for loss_name, loss_value in output.items():
                     losses_sum[loss_name] += float(loss_value)
-
                 timer.step(self.batchsize)
                 status = self.scheduler.step()
 
@@ -379,15 +380,15 @@ class Trainer:
                     for loss_name, loss_value in losses_sum.items():
                         loss_value = loss_value / self.scheduler.log_interval
                         loss_log += ', {}={:.6f}'.format(loss_name, loss_value)
-                        self.log_writer.add_scalar(
-                            tag='Training/' + loss_name,
-                            value=loss_value,
-                            step=self.cur_iter)
+                    #     self.log_writer.add_scalar(
+                    #         tag='Training/' + loss_name,
+                    #         value=loss_value,
+                    #         step=self.cur_iter)
 
-                    self.log_writer.add_scalar(
-                        tag='Training/learning_rate',
-                        value=lr,
-                        step=self.cur_iter)
+                    # self.log_writer.add_scalar(
+                    #     tag='Training/learning_rate',
+                    #     value=lr,
+                    #     step=self.cur_iter)
 
                     self.logger.info(
                         '[TRAIN] epoch={}/{}, iter={}/{} {}, lr={:.6f}, batch_cost: {:.6f} sec, ips: {:.6f} images/s | ETA {}'
@@ -397,8 +398,8 @@ class Trainer:
 
                     losses_sum.clear()
 
-                if self.use_ema:  # update ema_weight at each iter
-                    self.ema.update()
+                # if self.use_ema:  # update ema_weight at each iter
+                #     self.ema.update()
 
                 if status.do_eval and env.local_rank == 0:
                     # TODO: whether to save a checkpoint based on the metric

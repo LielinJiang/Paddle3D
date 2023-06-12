@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import time
 from typing import Dict, List
 import paddle
 import paddle.nn as nn
@@ -84,6 +84,13 @@ class BEVDet4D(nn.Layer):
         self.num_frame = num_adj + 1
         self.with_prev = with_prev
         self.start_temporal_epoch = start_temporal_epoch
+        self._iter = 0
+        self._t1 = 0
+        self._t2 = 0
+        self._t3 = 0
+        self._t11 = 0
+        self._t22 = 0
+        self._t33 = 0
 
     def shift_feature(self, input, trans, rots, bda, bda_adj=None):
         n, c, h, w = input.shape
@@ -159,14 +166,14 @@ class BEVDet4D(nn.Layer):
     def image_encoder(self, img):
         imgs = img
         B, N, C, imH, imW = imgs.shape
-        imgs = imgs.reshape((B * N, C, imH, imW))
+        imgs = imgs.reshape_((B * N, C, imH, imW))
         x = self.img_backbone(imgs)
         if self.with_img_neck:
             x = self.img_neck(x)
             if type(x) in [list, tuple]:
                 x = x[0]
         _, output_dim, ouput_H, output_W = x.shape
-        x = x.reshape((B, N, output_dim, ouput_H, output_W))
+        x = x.reshape_((B, N, output_dim, ouput_H, output_W))
         return x
 
     def bev_encoder(self, x):
@@ -178,14 +185,22 @@ class BEVDet4D(nn.Layer):
 
     def prepare_bev_feat(self, img, rot, tran, intrin, post_rot, post_tran, bda,
                          mlp_input):
-
+        # paddle.device.cuda.synchronize()
+        # t1 = time.time()
         x = self.image_encoder(img)  # backbone + neck
-
+        # paddle.device.cuda.synchronize()
+        # t2 = time.time()
         bev_feat, depth = self.img_view_transformer(
             [x, rot, tran, intrin, post_rot, post_tran, bda, mlp_input])
-
+        # paddle.device.cuda.synchronize()
+        # t3 = time.time()
         if self.pre_process:
             bev_feat = self.pre_process_net(bev_feat)[0]
+        # paddle.device.cuda.synchronize()
+        # t4 = time.time()
+        # print('image_encoder time:', t2 - t1)
+        # print('img_view_transformer time:', t3 - t2)
+        # print('pre_process_net time:', t4 - t3)
 
         return bev_feat, depth
 
@@ -216,18 +231,19 @@ class BEVDet4D(nn.Layer):
 
     def prepare_inputs(self, inputs):
         # split the inputs into each frame
+        # print(len(inputs), len(inputs[0]), inputs[0][0].shape)
         B, N, _, H, W = inputs[0].shape
         N = N // self.num_frame
-        imgs = inputs[0].reshape((B, N, self.num_frame, 3, H, W))
+        imgs = inputs[0].reshape_((B, N, self.num_frame, 3, H, W))
         imgs = paddle.split(imgs, imgs.shape[2], axis=2)
         imgs = [t.squeeze(2) for t in imgs]
         rots, trans, intrins, post_rots, post_trans, bda = inputs[1:7]
         extra = [
-            rots.reshape((B, self.num_frame, N, 3, 3)),
-            trans.reshape((B, self.num_frame, N, 3)),
-            intrins.reshape((B, self.num_frame, N, 3, 3)),
-            post_rots.reshape((B, self.num_frame, N, 3, 3)),
-            post_trans.reshape((B, self.num_frame, N, 3))
+            rots.reshape_((B, self.num_frame, N, 3, 3)),
+            trans.reshape_((B, self.num_frame, N, 3)),
+            intrins.reshape_((B, self.num_frame, N, 3, 3)),
+            post_rots.reshape_((B, self.num_frame, N, 3, 3)),
+            post_trans.reshape_((B, self.num_frame, N, 3))
         ]
         extra = [paddle.split(t, t.shape[1], 1) for t in extra]
         extra = [[p.squeeze(1) for p in t] for t in extra]
@@ -242,21 +258,31 @@ class BEVDet4D(nn.Layer):
                          **kwargs):
         if sequential:
             return self.extract_img_feat_sequential(img, kwargs['feat_prev'])
-
+        # paddle.device.cuda.synchronize()
+        # t1 = time.time()
         imgs, rots, trans, intrins, post_rots, post_trans, bda = \
            self.prepare_inputs(img)
         """Extract features of images."""
         bev_feat_list = []
         depth_list = []
         key_frame = True  # back propagation for key frame only
-
+        # print('len,imgs', len(imgs), imgs[0].shape)
+        # paddle.device.cuda.synchronize()
+        # t2 = time.time()
+        idx = 0
         for img, rot, tran, intrin, post_rot, post_tran in zip(
                 imgs, rots, trans, intrins, post_rots, post_trans):
+            # paddle.device.cuda.synchronize()
+            # t222 = time.time()
             if key_frame or self.with_prev:
                 if self.align_after_view_transfromation:
                     rot, tran = rots[0], trans[0]
+                # paddle.device.cuda.synchronize()
+                # t21 = time.time()
                 mlp_input = self.img_view_transformer.get_mlp_input(
                     rots[0], trans[0], intrin, post_rot, post_tran, bda)
+                # paddle.device.cuda.synchronize()
+                # t22 = time.time()
                 inputs_curr = (img, rot, tran, intrin, post_rot, post_tran, bda,
                                mlp_input)
                 if key_frame:
@@ -265,13 +291,20 @@ class BEVDet4D(nn.Layer):
                 else:
                     with paddle.no_grad():
                         bev_feat, depth = self.prepare_bev_feat(*inputs_curr)
-
+                # paddle.device.cuda.synchronize()
+                # t23 = time.time()
+                # print('get_mlp_input time:', t22 - t21)
+                # print('prepare_bev_feat time:', t23 - t22)
             else:
                 bev_feat = paddle.zeros_like(bev_feat_list[0])
                 depth = None
             bev_feat_list.append(bev_feat)
             depth_list.append(depth)
             key_frame = False
+            # paddle.device.cuda.synchronize()
+            # t333 = time.time()
+            # print('in_for_pre_time:', idx, t333 - t222)
+            idx += 1
 
         if pred_prev:
             assert self.align_after_view_transfromation
@@ -293,9 +326,15 @@ class BEVDet4D(nn.Layer):
                                        [trans[0], trans[adj_id]],
                                        [rots[0], rots[adj_id]],
                                        bda)
+        # paddle.device.cuda.synchronize()
+        # t3 = time.time()
         bev_feat = paddle.concat(bev_feat_list, axis=1)
         x = self.bev_encoder(bev_feat)
-
+        # paddle.device.cuda.synchronize()
+        # t4 = time.time()
+        # print('prepare time:', t2 - t1)
+        # print('for prepare feat time:', t3 - t2)
+        # print('bev_encoder time:', t4 - t3)
         return [x], depth_list[0]
 
     def extract_feat(self, points, img, img_metas, **kwargs):
@@ -315,18 +354,66 @@ class BEVDet4D(nn.Layer):
                       **kwargs):
         """Forward training function.
         """
+        # paddle.device.cuda.synchronize()
+        # t1 = time.time()
+        self._iter += 1
         points = None
         img_metas = samples['meta']
         img = samples['img_inputs']
         gt_depth = samples['gt_depth']
         gt_labels_3d = samples['gt_labels_3d']
         gt_bboxes_3d = samples['gt_bboxes_3d']
+        # rank = paddle.distributed.get_rank()
+        # paddle.save((img_metas, img, gt_depth, gt_labels_3d, gt_bboxes_3d), 'fake_data_%s.pkl' % rank)
+        # img_metas, img, gt_depth, gt_labels_3d, gt_bboxes_3d = paddle.load('fake_data_%s.pkl' % rank)
+        # paddle.distributed.barrier()
+        # b = aa
+        target_inputs = None
+        if 'heatmaps' in samples:
+            heatmaps = samples['heatmaps']
+            anno_boxes = samples['anno_boxes']
+            inds = samples['inds']
+            masks = samples['masks']
+            target_inputs = (heatmaps, anno_boxes, inds, masks)
+        # 'heatmaps', 'anno_boxes', 'inds', 'masks'
+        # paddle.device.cuda.synchronize()
+        # t1 = time.time()
         img_feats, pts_feats, depth = self.extract_feat(
             points, img=img, img_metas=img_metas, **kwargs)
+        # print('img_feats', img_feats[0].shape, depth.shape)
+        # img_feats = [paddle.zeros([4, 256, 128, 128], dtype='float32')]
+        # depth = paddle.zeros([24, 118, 16, 44], dtype='float32')
+        # img_feats[0].stop_gradient = False
+        # depth.stop_gradient = False
+        
+        # paddle.device.cuda.synchronize()
+        # t2 = time.time()
         loss_depth = self.img_view_transformer.get_depth_loss(gt_depth, depth)
+        # loss_depth = depth.mean()
         losses = dict(loss_depth=loss_depth)
+        # paddle.device.cuda.synchronize()
+        # t3 = time.time()
         losses_pts = self.forward_pts_train(
-            img_feats, gt_bboxes_3d, gt_labels_3d, img_metas, gt_bboxes_ignore)
+            img_feats, gt_bboxes_3d, gt_labels_3d, img_metas, gt_bboxes_ignore, target_inputs)
+        # losses_pts = dict(losses_pts=img_feats[0].mean())
+        # paddle.device.cuda.synchronize()
+        # t4 = time.time()
+        # if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
+        # self._t1 += t2 - t1
+        # self._t2 += t3 - t2
+        # self._t3 += t4 - t3
+        
+        # if self._iter % 10 == 0:
+
+        #     print('backbone time:', self._t1)
+        #     print('depth loss time:', self._t2)
+        #     print('head time:', self._t3)
+        #     self._t1 = 0
+        #     self._t2 = 0
+        #     self._t3 = 0
+            # print('backbone time:', t2 - t1)
+            # print('depth loss time:', t3 - t2)
+            # print('head time:', t4 - t3)
         losses.update(losses_pts)
         return {"loss": losses}
 
@@ -335,10 +422,29 @@ class BEVDet4D(nn.Layer):
                           gt_bboxes_3d,
                           gt_labels_3d,
                           img_metas,
-                          gt_bboxes_ignore=None):
+                          gt_bboxes_ignore=None,
+                          target_inputs=None):
+        # paddle.device.cuda.synchronize()
+        # t1 = time.time()
         outs = self.pts_bbox_head(pts_feats[0])  # single apply
-        loss_inputs = [gt_bboxes_3d, gt_labels_3d, outs[0]]
+        # paddle.device.cuda.synchronize()
+        # t2 = time.time()
+        loss_inputs = [gt_bboxes_3d, gt_labels_3d, outs[0], target_inputs]
         losses = self.pts_bbox_head.loss(*loss_inputs)
+        # paddle.device.cuda.synchronize()
+        # t3 = time.time()
+        # self._t11 += t2 - t1
+        # self._t22 += t3 - t2
+        # # self._t33 += t4 - t3
+        
+        # if self._iter % 10 == 0:
+
+        #     print('head forward time:', self._t11)
+        #     print('head loss time:', self._t22)
+        #     # print('head time:', self._t33)
+        #     self._t11 = 0
+        #     self._t22 = 0
+            # self._t33 = 0
         return losses
 
     def forward(self, samples, *args, **kwargs):

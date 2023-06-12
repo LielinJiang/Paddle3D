@@ -21,7 +21,7 @@ det3d (https://github.com/poodarchu/Det3D/tree/56402d4761a5b73acd23080f537599b08
 Ths copyright of det3d is as follows:
 MIT License [see LICENSE for details].
 """
-
+import time
 import copy
 import paddle
 import paddle.nn.functional as F
@@ -35,7 +35,7 @@ from paddle3d.models.losses import GaussianFocalLoss, L1Loss
 from paddle3d.models.voxel_encoders.pillar_encoder import build_norm_layer
 from paddle3d.utils.logger import logger
 import paddle.distributed as dist
-
+from .petr_head import multi_apply
 
 class ConvModule(nn.Layer):
     def __init__(self,
@@ -152,7 +152,7 @@ class CenterHeadMatch(nn.Layer):
 
         num_classes = [len(t["class_names"]) for t in tasks]
         self.class_names = [t["class_names"] for t in tasks]
-        self.code_weights = code_weights
+        # self.code_weights = code_weights
         self.weight = weight  # weight between hm loss and loc loss
 
         self.in_channels = in_channels
@@ -163,14 +163,14 @@ class CenterHeadMatch(nn.Layer):
 
         self.box_n_dim = 9 if 'vel' in common_heads else 7
         self.with_velocity = True if 'vel' in common_heads else False
-        self.code_weights = code_weights
+        # self.code_weights = code_weights
         self.use_direction_classifier = False
         self.test_cfg = test_cfg
         self.train_cfg = train_cfg
         self.bbox_coder = bbox_coder
         self.norm_bbox = norm_bbox
         self.task_specific = task_specific
-
+        self.code_weights = paddle.to_tensor(self.train_cfg['code_weights'], dtype='float32')
         # a shared convolution
         self.shared_conv = ConvModule(
             in_channels,
@@ -194,6 +194,15 @@ class CenterHeadMatch(nn.Layer):
 
         logger.info("Finish CenterHead Initialization")
 
+        self._iter = 0
+        self._t1 = 0
+        self._t2 = 0
+        self._t3 = 0
+
+        self._t11 = 0
+        self._t22 = 0
+        self._t33 = 0
+
     def forward(self, x, *kwargs):
         ret_dicts = []
 
@@ -211,18 +220,25 @@ class CenterHeadMatch(nn.Layer):
     def get_targets(self, gt_bboxes_3d, gt_labels_3d):
         """Generate targets.
         """
+        # paddle.device.cuda.synchronize()
+        # t1 = time.time()
         heatmaps = []
         anno_boxes = []
         inds = []
         masks = []
-        for gt_bbox_3d, gt_label_3d in zip(gt_bboxes_3d, gt_labels_3d):
-            heatmap, annos_box, ind, mask = self.get_targets_single(
-                gt_bbox_3d, gt_label_3d)
-            heatmaps.append(heatmap)
-            anno_boxes.append(annos_box)
-            inds.append(ind)
-            masks.append(mask)
+        # for gt_bbox_3d, gt_label_3d in zip(gt_bboxes_3d, gt_labels_3d):
+        #     heatmap, annos_box, ind, mask = self.get_targets_single(
+        #         gt_bbox_3d, gt_label_3d)
+        #     heatmaps.append(heatmap)
+        #     anno_boxes.append(annos_box)
+        #     inds.append(ind)
+        #     masks.append(mask)
 
+        with paddle.no_grad():
+            heatmaps, anno_boxes, inds, masks = multi_apply(
+                self.get_targets_single, gt_bboxes_3d, gt_labels_3d)
+        # paddle.device.cuda.synchronize()
+        # t2 = time.time()
         # Transpose heatmaps
         heatmaps = list(map(list, zip(*heatmaps)))
         heatmaps = [paddle.stack(hms_) for hms_ in heatmaps]
@@ -235,6 +251,13 @@ class CenterHeadMatch(nn.Layer):
         # Transpose inds
         masks = list(map(list, zip(*masks)))
         masks = [paddle.stack(masks_) for masks_ in masks]
+
+        # self._t3 += t2 - t1
+        # if self._iter % 10 == 0:
+        #     print('target single time:', self._t3)
+        #     # print('loss time:', self._t2)
+        #     # self._t1 = 0
+        #     self._t3 = 0
         return heatmaps, anno_boxes, inds, masks
 
     def get_targets_single(self, gt_bboxes_3d, gt_labels_3d):
@@ -255,7 +278,8 @@ class CenterHeadMatch(nn.Layer):
                 - list[torch.Tensor]: Masks indicating which boxes
                     are valid.
         """
-
+        # paddle.device.cuda.synchronize()
+        # t1 = time.time()
         def gravity_center(box):
             bottom_center = box[:, :3]
             gravity_center = paddle.zeros(bottom_center.shape,
@@ -270,9 +294,9 @@ class CenterHeadMatch(nn.Layer):
                                      axis=1)
 
         max_objs = self.train_cfg['max_objs'] * self.train_cfg['dense_reg']
-        grid_size = paddle.to_tensor(self.train_cfg['grid_size'])
-        pc_range = paddle.to_tensor(self.train_cfg['point_cloud_range'])
-        voxel_size = paddle.to_tensor(self.train_cfg['voxel_size'])
+        grid_size = paddle.to_tensor(self.train_cfg['grid_size'], place='cpu')
+        pc_range = paddle.to_tensor(self.train_cfg['point_cloud_range'], place='cpu')
+        voxel_size = paddle.to_tensor(self.train_cfg['voxel_size'], place='cpu')
 
         feature_map_size = grid_size[:2] // self.train_cfg['out_size_factor']
 
@@ -289,6 +313,7 @@ class CenterHeadMatch(nn.Layer):
         task_boxes = []
         task_classes = []
         flag2 = 0
+
         for idx, mask in enumerate(task_masks):
             task_box = []
             task_class = []
@@ -304,9 +329,13 @@ class CenterHeadMatch(nn.Layer):
             task_classes.append(
                 paddle.concat(task_class).cast("int64").
                 squeeze(1) if task_box != [] else paddle.empty((0, 1)))
+            # print('task_boxes', task_boxes[-1].shape)
             flag2 += len(mask)
         draw_gaussian = draw_heatmap_gaussian
         heatmaps, anno_boxes, inds, masks = [], [], [], []
+        # b = aa
+        # paddle.device.cuda.synchronize()
+        # t2 = time.time()
 
         for idx, task_head in enumerate(self.task_heads):
             heatmap = paddle.zeros((len(self.class_names[idx]),
@@ -322,10 +351,11 @@ class CenterHeadMatch(nn.Layer):
             mask = paddle.zeros((max_objs, ), dtype='int32')
 
             num_objs = min(task_boxes[idx].shape[0], max_objs)
-
+            # paddle.device.cuda.synchronize()
+            # t1 = time.time()
             for k in range(num_objs):
                 cls_id = (task_classes[idx][k] - 1).item()
-
+                
                 width = task_boxes[idx][k][3]
                 length = task_boxes[idx][k][4]
                 width = width / voxel_size[0] / self.train_cfg['out_size_factor']
@@ -387,18 +417,47 @@ class CenterHeadMatch(nn.Layer):
                              box_dim.cast('float32'),
                              paddle.sin(rot),
                              paddle.cos(rot)])
-
+            # paddle.device.cuda.synchronize()
+            # t2 = time.time()
+            # print('for time:', t2 - t1)
             heatmaps.append(heatmap)
             anno_boxes.append(anno_box)
             masks.append(mask)
             inds.append(ind)
+
+        # paddle.device.cuda.synchronize()
+        # t3 = time.time()
+
+        # self._t11 += t2 - t1
+        # self._t22 += t3 - t2
+        # if self._iter % 10 == 0:
+        #     print('before for time:', self._t11)
+        #     print('post for time:', self._t22)
+        #     self._t11 = 0
+        #     self._t22 = 0
         return heatmaps, anno_boxes, inds, masks
 
-    def loss(self, gt_bboxes_3d, gt_labels_3d, preds_dicts, **kwargs):
+    def loss(self, gt_bboxes_3d, gt_labels_3d, preds_dicts, target_inputs=None, **kwargs):
         """Loss function for CenterHead.
         """
-        heatmaps, anno_boxes, inds, masks = self.get_targets(
-            gt_bboxes_3d, gt_labels_3d)
+        # self._iter += 1
+        # paddle.device.cuda.synchronize()
+        # t1 = time.time()
+        if target_inputs is not None:
+            heatmaps, anno_boxes, inds, masks = target_inputs
+            # print('target heatmaps', len(heatmaps), len(anno_boxes), len(inds), len(masks))
+            # print(type(heatmaps), type(heatmaps[0]), type(heatmaps[0][0]))
+            # print(heatmaps[0].shape)
+            # heatmaps = heatmaps.transpose([1, 0, 2, 3, 4])
+        else:
+            heatmaps, anno_boxes, inds, masks = self.get_targets(
+                gt_bboxes_3d, gt_labels_3d)
+            # print('heatmaps', len(heatmaps), heatmaps[0].shape)
+        # print('heatmaps', heatmaps.shape, anno_boxes.shape, inds.shape, masks.shape)
+        # paddle.device.cuda.synchronize()
+        # t2 = time.time()
+        
+        # print('target time:', t2 - t1)
         loss_dict = dict()
         if not self.task_specific:
             loss_dict['loss'] = 0
@@ -408,6 +467,7 @@ class CenterHeadMatch(nn.Layer):
             num_pos = (heatmaps[task_id] == 1).cast("float32").sum()
 
             cls_avg_factor = paddle.clip(
+                # paddle.to_tensor(num_pos, dtype=heatmaps[task_id].dtype),
                 reduce_mean(paddle.to_tensor(num_pos, heatmaps[task_id].dtype)),
                 min=1).item()
 
@@ -437,14 +497,17 @@ class CenterHeadMatch(nn.Layer):
             mask = masks[task_id].unsqueeze(2).expand_as(target_box).cast(
                 "float32")
             num = paddle.clip(
+                # paddle.to_tensor(num, dtype=target_box.dtype),
                 reduce_mean(paddle.to_tensor(num, dtype=target_box.dtype)),
                 min=1e-4).item()
             isnotnan = (~paddle.isnan(target_box)).cast('float32')
             mask *= isnotnan
-            code_weights = self.train_cfg['code_weights']
+            # code_weights = self.train_cfg['code_weights']
+            code_weights = self.code_weights
 
-            bbox_weights = mask * paddle.to_tensor(
-                code_weights, dtype=mask.dtype)
+            bbox_weights = mask * code_weights
+            # bbox_weights = mask * paddle.to_tensor(
+            #     code_weights, dtype=mask.dtype)
             if self.task_specific:
                 name_list = ['xy', 'z', 'whl', 'yaw', 'vel']
                 clip_index = [0, 2, 3, 6, 8, 10]
@@ -469,7 +532,17 @@ class CenterHeadMatch(nn.Layer):
                     pred, target_box, bbox_weights, avg_factor=num)
                 loss_dict['loss'] += loss_bbox
                 loss_dict['loss'] += loss_heatmap
+        
+        # paddle.device.cuda.synchronize()
+        # t3 = time.time()
 
+        # self._t1 += t2 - t1
+        # self._t2 += t3 - t2
+        # if self._iter % 10 == 0:
+        #     print('target time:', self._t1)
+        #     print('loss time:', self._t2)
+        #     self._t1 = 0
+        #     self._t2 = 0
         return loss_dict
 
     def _gather_feat(self, feat, ind, mask=None):

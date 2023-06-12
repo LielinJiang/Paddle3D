@@ -14,6 +14,7 @@
 
 import argparse
 import os
+import cv2
 import random
 
 import numpy as np
@@ -164,6 +165,11 @@ def main(args):
     logger = Logger(output=args.save_dir)
     place = 'gpu' if paddle.is_compiled_with_cuda() else 'cpu'
     paddle.set_device(place)
+    # import paddle
+
+    # print('set cv num threads')
+    # opencv_num_threads = 0
+    # cv2.setNumThreads(opencv_num_threads)
 
     if args.seed is not None:
         logger.info("use random seed {}".format(args.seed))
