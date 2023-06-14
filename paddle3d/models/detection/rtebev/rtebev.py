@@ -33,6 +33,8 @@ from paddle3d.geometries import BBoxes3D
 from paddle3d.sample import Sample, SampleMeta
 from paddle3d.models.layers import param_init
 from paddle3d.ops import bev_pool_v2
+from paddle3d.slim.quant import QAT
+from paddle3d.utils.logger import logger
 
 
 @manager.MODELS.add_component
@@ -1104,6 +1106,16 @@ class RTEBev(nn.Layer):
         ]
 
         return bbox_results
+
+    def build_slim_model(self, slim_config: str):
+        """ Slim the model and update the cfg params
+        """
+        self._quant = True
+
+        logger.info("Build QAT model.")
+        self.qat = QAT(quant_config=slim_config)
+        # slim the model
+        self.qat(self)
 
     def bbox3d2result(self, bboxes, scores, labels, attrs=None):
         """Convert detection results to a list of numpy arrays.
